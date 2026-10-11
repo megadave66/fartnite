@@ -313,14 +313,16 @@ function checkCollision(pos) {
 
 // ── INPUT ──
 window.addEventListener('keydown', e => {
-  if (keys.hasOwnProperty(e.key.toLowerCase())) {
-    keys[e.key.toLowerCase()] = true;
+  const key = e.key === ' ' ? 'space' : e.key.toLowerCase();
+  if (keys.hasOwnProperty(key)) {
+    keys[key] = true;
     e.preventDefault();
   }
 });
 window.addEventListener('keyup', e => {
-  if (keys.hasOwnProperty(e.key.toLowerCase())) {
-    keys[e.key.toLowerCase()] = false;
+  const key = e.key === ' ' ? 'space' : e.key.toLowerCase();
+  if (keys.hasOwnProperty(key)) {
+    keys[key] = false;
     e.preventDefault();
   }
 });
@@ -387,7 +389,7 @@ function updateCamera() {
 // ── HUD ──
 const hud = document.getElementById('hud');
 function updateHUD() {
-  hud.textContent = `HP: ${health} | Score: ${score} | Targets: ${targets.filter(t => t.userData.hp > 0).length} | v6`;
+  hud.textContent = `HP: ${health} | Score: ${score} | Targets: ${targets.filter(t => t.userData.hp > 0).length} | v7`;
 }
 
 // ── RESIZE ──
@@ -468,12 +470,17 @@ function animate() {
     }
 
     // Then resolve vertical (Y) at the resolved XZ position
-    const vTest = new THREE.Vector3(playerGroup.position.x, newY, playerGroup.position.z);
-    if (!checkCollision(vTest).collided) {
+    // Only block vertical when falling — jumping up should never be blocked
+    if (newY > playerGroup.position.y) {
       playerGroup.position.y = newY;
     } else {
-      yVelocity = 0;
-      if (newY <= GROUND_Y) isGrounded = true;
+      const vTest = new THREE.Vector3(playerGroup.position.x, newY, playerGroup.position.z);
+      if (!checkCollision(vTest).collided) {
+        playerGroup.position.y = newY;
+      } else {
+        yVelocity = 0;
+        isGrounded = true;
+      }
     }
 
     // Boundary clamp
