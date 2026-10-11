@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fartnite</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #crosshair {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    pointer-events: none; z-index: 10;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: rgba(255,255,255,0.9);
+  }
+  #crosshair::before { width: 24px; height: 2px; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+  #crosshair::after { width: 2px; height: 24px; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+  #crosshair span {
+    display: block; width: 8px; height: 8px;
+    border: 2px solid rgba(255,255,255,0.9); border-radius: 50%;
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  }
+  #hud {
+    position: fixed; bottom: 20px; left: 20px; color: #fff;
+    font-family: monospace; font-size: 14px; pointer-events: none; z-index: 10;
+    background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 4px;
+  }
+  #instructions {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+    color: #fff; font-family: monospace; font-size: 13px; pointer-events: none;
+    z-index: 10; background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 4px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="crosshair"><span></span></div>
+<div id="hud"></div>
+<div id="instructions">WASD move | Mouse look | Click shoot | Space jump | Shift sprint</div>
+
+<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+
+<script>
+// ── RENDERER ──
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+// ── SCENE ──
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#87CEEB');
+scene.fog = new THREE.Fog('#87CEEB', 80, 200);
+
+// ── CAMERA ──
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 300);
+camera.position.set(0, 12, 15);
+
+// ── LIGHTING ──
+const ambient = new THREE.AmbientLight('#b5d5ff', 0.6);
+scene.add(ambient);
+
+const sun = new THREE.DirectionalLight('#fff4e0', 3.5);
+sun.position.set(40, 50, 20);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 200;
+sun.shadow.camera.left = -60;
+sun.shadow.camera.right = 60;
+sun.shadow.camera.top = 60;
+sun.shadow.camera.bottom = -60;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const hemi = new THREE.HemisphereLight('#87CEEB', '#3d5c2e', 0.4);
+scene.add(hemi);
+
+// ── TERRAIN ──
+const groundGeo = new THREE.PlaneGeometry(120, 120);
+const groundMat = new THREE.MeshStandardMaterial({ color: '#5a8c3c', roughness: 0.9 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Grid lines for visual reference
+const gridHelper = new THREE.PolarGridHelper(60, 40, 20, 64, '#3a6b22', '#3a6b22');
+gridHelper.position.y = 0.01;
+scene.add(gridHelper);
+
+// ── BUILD MATERIALS ──
+const wallMat = new THREE.MeshStandardMaterial({ color: '#c4a882', roughness: 0.7 });
+const wallMat2 = new THREE.MeshStandardMaterial({ color: '#d4b896', roughness: 0.6 });
+const roofMat = new THREE.MeshStandardMaterial({ color: '#8b4513', roughness: 0.8 });
+const floorMat = new THREE.MeshStandardMaterial({ color: '#a0a0a0', roughness: 0.5 });
+const crateMat = new THREE.MeshStandardMaterial({ color: '#8B6914', roughness: 0.8 });
+const crateMat2 = new THREE.MeshStandardMaterial({ color: '#6B4914', roughness: 0.9 });
+
+function makeBox(w, h, d, mat, { cast = true, receive = true } = {}) {
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = cast;
+  mesh.receiveShadow = receive;
+  return mesh;
+}
+
+function makeBuilding(x, z, w, d, stories) {
+  const group = new THREE.Group();
+  const h = stories * 3;
+  const body = makeBox(w, h, d, wallMat);
+  body.position.y = h / 2;
+  group.add(body);
+
+  const roof = makeBox(w + 0.6, 0.4, d + 0.6, roofMat);
+  roof.position.y = h + 0.2;
+  group.add(roof);
+
+  // Windows
+  const windowMat = new THREE.MeshStandardMaterial({ color: '#88ccff', roughness: 0.3, emissive: '#334455', emissiveIntensity: 0.3 });
+  for (let s = 0; s < stories; s++) {
+    const wy = 1.5 + s * 3;
+    [-1, 1].forEach(side => {
+      const win = makeBox(w / 4, 1.5, 0.2, windowMat, { cast: false, receive: false });
+      win.position.set(side * w / 4, wy, d / 2 + 0.05);
+      group.add(win);
+    });
+  }
+
+  group.position.set(x, 0, z);
+  return group;
+}
+
+// ── MAP ──
+// Central large building
+scene.add(makeBuilding(0, -5, 10, 10, 3));
+
+// Surrounding buildings
+scene.add(makeBuilding(20, 0, 8, 6, 2));
+scene.add(makeBuilding(-20, 0, 6, 8, 2));
+scene.add(makeBuilding(0, 20, 7, 7, 2));
+scene.add(makeBuilding(-15, -20, 5, 5, 3));
+scene.add(makeBuilding(18, -18, 6, 6, 1));
+scene.add(makeBuilding(-18, 18, 8, 5, 2));
+scene.add(makeBuilding(5, -22, 7, 4, 2));
+scene.add(makeBuilding(-8, 22, 5, 7, 1));
+
+// Crates and cover
+for (let i = 0; i < 30; i++) {
+  const size = 0.8 + Math.random() * 1.5;
+  const crateH = size * (0.5 + Math.random() * 0.5);
+  const crate = makeBox(size, crateH, size, Math.random() > 0.5 ? crateMat : crateMat2);
+  let cx, cz;
+  do {
+    cx = (Math.random() - 0.5) * 55;
+    cz = (Math.random() - 0.5) * 55;
+  } while (Math.abs(cx) < 7 && Math.abs(cz) < 7);
+  crate.position.set(cx, crateH / 2, cz);
+  crate.rotation.y = Math.random() * Math.PI;
+  scene.add(crate);
+}
+
+// Trees
+function makeTree(x, z) {
+  const group = new THREE.Group();
+  const trunk = makeBox(0.3, 3, 0.3, new THREE.MeshStandardMaterial({ color: '#8B4513', roughness: 0.9 }));
+  trunk.position.y = 1.5;
+  group.add(trunk);
+
+  const foliageColors = ['#2d5a1e', '#3a7a2a', '#2a6b1e', '#1e4d10'];
+  for (let i = 0; i < 2; i++) {
+    const foliage = new THREE.Mesh(
+      new THREE.ConeGeometry(1.5 - i * 0.3, 2, 8),
+      new THREE.MeshStandardMaterial({ color: foliageColors[Math.floor(Math.random() * 4)], roughness: 0.8 })
+    );
+    foliage.position.y = 2.5 + i * 1.2;
+    foliage.castShadow = true;
+    foliage.receiveShadow = true;
+    group.add(foliage);
+  }
+
+  group.position.set(x, 0, z);
+  return group;
+}
+
+for (let i = 0; i < 40; i++) {
+  let tx, tz;
+  do {
+    tx = (Math.random() - 0.5) * 55;
+    tz = (Math.random() - 0.5) * 55;
+  } while (Math.abs(tx) < 5 && Math.abs(tz) < 5);
+  scene.add(makeTree(tx, tz));
+}
+
+// Targets (shootable)
+const targets = [];
+const targetMat = new THREE.MeshStandardMaterial({ color: '#ff4444', roughness: 0.3, emissive: '#440000', emissiveIntensity: 0.5 });
+for (let i = 0; i < 8; i++) {
+  const angle = (i / 8) * Math.PI * 2;
+  const r = 30;
+  const target = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 2, 8), targetMat);
+  target.position.set(Math.cos(angle) * r, 1, Math.sin(angle) * r);
+  target.castShadow = true;
+  target.receiveShadow = true;
+  target.userData = { type: 'target', hp: 3 };
+  scene.add(target);
+  targets.push(target);
+}
+
+// ── PLAYER ──
+const playerGroup = new THREE.Group();
+const body = new THREE.Mesh(
+  new THREE.CapsuleGeometry(0.4, 0.8, 4, 8),
+  new THREE.MeshStandardMaterial({ color: '#4488ff', roughness: 0.4, metalness: 0.1 })
+);
+body.position.y = 0.9;
+body.castShadow = true;
+playerGroup.add(body);
+
+const head = new THREE.Mesh(
+  new THREE.SphereGeometry(0.25, 8, 6),
+  new THREE.MeshStandardMaterial({ color: '#ffcc99', roughness: 0.6 })
+);
+head.position.y = 1.65;
+head.castShadow = true;
+playerGroup.add(head);
+
+// Pickaxe arm
+const armGroup = new THREE.Group();
+const arm = new THREE.Mesh(
+  new THREE.CapsuleGeometry(0.12, 0.5, 4, 8),
+  new THREE.MeshStandardMaterial({ color: '#4488ff', roughness: 0.4, metalness: 0.1 })
+);
+arm.position.set(0, -0.25, 0);
+arm.castShadow = true;
+armGroup.add(arm);
+
+const pickaxe = new THREE.Mesh(
+  new THREE.BoxGeometry(0.1, 0.6, 0.25),
+  new THREE.MeshStandardMaterial({ color: '#888', roughness: 0.3, metalness: 0.8 })
+);
+pickaxe.position.set(0, -0.55, 0.1);
+pickaxe.castShadow = true;
+armGroup.add(pickaxe);
+
+armGroup.position.set(0.45, 1.5, 0.15);
+armGroup.rotation.z = -0.5;
+armGroup.rotation.x = 0.3;
+playerGroup.add(armGroup);
+
+playerGroup.position.set(0, 0, 10);
+scene.add(playerGroup);
+
+// ── GAME STATE ──
+const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
+const mouse = { x: 0, y: 0, locked: false };
+let velocity = new THREE.Vector3();
+let yVelocity = 0;
+const GRAVITY = -20;
+const JUMP_VELOCITY = 8;
+const WALK_SPEED = 6;
+const SPRINT_MULT = 1.6;
+const GROUND_Y = 0;
+let isGrounded = true;
+let health = 100;
+let score = 0;
+
+// Collision boxes (simplified AABB)
+const colliders = [];
+function addCollider(mesh) {
+  const box = new THREE.Box3().setFromObject(mesh);
+  colliders.push(box);
+}
+
+// Gather all collidable objects
+scene.traverse(child => {
+  if (child.isMesh && child !== body && child !== head && child !== arm && child !== pickaxe
+      && child.parent !== playerGroup && child !== ground) {
+    // Only static level geometry
+    if (child.geometry && (child.geometry.type === 'BoxGeometry' || child.geometry.type === 'CylinderGeometry')) {
+      addCollider(child);
+    }
+  }
+});
+
+function checkCollision(pos) {
+  const playerBox = new THREE.Box3(
+    new THREE.Vector3(pos.x - 0.4, pos.y + 0.6, pos.z - 0.4),
+    new THREE.Vector3(pos.x + 0.4, pos.y + 1.8, pos.z + 0.4)
+  );
+  let collided = false;
+  const pushOut = new THREE.Vector3();
+  for (const box of colliders) {
+    if (playerBox.intersectsBox(box)) {
+      collided = true;
+      // Simple push-out along each axis
+      const dx = Math.min(playerBox.max.x - box.min.x, box.max.x - playerBox.min.x);
+      const dz = Math.min(playerBox.max.z - box.min.z, box.max.z - playerBox.min.z);
+      if (dx < dz) {
+        pushOut.x += (playerBox.max.x - box.min.x) < (box.max.x - playerBox.min.x) ? -dx : dx;
+      } else {
+        pushOut.z += (playerBox.max.z - box.min.z) < (box.max.z - playerBox.min.z) ? -dz : dz;
+      }
+    }
+  }
+  return { collided, pushOut };
+}
+
+// ── INPUT ──
+window.addEventListener('keydown', e => {
+  if (keys.hasOwnProperty(e.key.toLowerCase())) {
+    keys[e.key.toLowerCase()] = true;
+    e.preventDefault();
+  }
+});
+window.addEventListener('keyup', e => {
+  if (keys.hasOwnProperty(e.key.toLowerCase())) {
+    keys[e.key.toLowerCase()] = false;
+    e.preventDefault();
+  }
+});
+
+document.addEventListener('click', () => {
+  renderer.domElement.requestPointerLock();
+});
+
+document.addEventListener('pointerlockchange', () => {
+  mouse.locked = document.pointerLockElement === renderer.domElement;
+});
+
+document.addEventListener('mousemove', e => {
+  if (mouse.locked) {
+    mouse.x += e.movementX * 0.002;
+    mouse.y -= e.movementY * 0.002;
+    mouse.y = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, mouse.y));
+  }
+});
+
+// ── SHOOTING ──
+const bullets = [];
+const bulletGeo = new THREE.SphereGeometry(0.15, 6, 4);
+const bulletMat = new THREE.MeshStandardMaterial({ color: '#ffdd00', emissive: '#ff8800', emissiveIntensity: 0.8 });
+
+window.addEventListener('mousedown', e => {
+  if (!mouse.locked || e.button !== 0) return;
+  shoot();
+});
+
+function shoot() {
+  const dir = new THREE.Vector3(0, 0, -1);
+  dir.applyQuaternion(camera.quaternion);
+  const bullet = new THREE.Mesh(bulletGeo, bulletMat);
+  bullet.position.copy(camera.position).add(dir.clone().multiplyScalar(1.5));
+  bullet.userData = { velocity: dir.multiplyScalar(60), life: 2.0 };
+  bullet.castShadow = true;
+  scene.add(bullet);
+  bullets.push(bullet);
+
+  // Muzzle flash
+  const flash = new THREE.PointLight('#ffaa00', 5, 8);
+  flash.position.copy(bullet.position);
+  scene.add(flash);
+  setTimeout(() => scene.remove(flash), 80);
+}
+
+// ── CAMERA (third person) ──
+function updateCamera() {
+  const playerPos = playerGroup.position.clone();
+  const orbitAngle = -mouse.x;
+  const offset = new THREE.Vector3(5.0, 2.5, 7);
+  offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), orbitAngle);
+  camera.position.copy(playerPos).add(offset);
+  // Look target and orbit MUST use the same angle, or they fight
+  const forwardDir = new THREE.Vector3(0, 0, -1);
+  forwardDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), orbitAngle);
+  const lookTarget = playerPos.clone();
+  lookTarget.add(forwardDir.multiplyScalar(12));
+  lookTarget.y += mouse.y * 6;
+  camera.lookAt(lookTarget);
+}
+
+// ── HUD ──
+const hud = document.getElementById('hud');
+function updateHUD() {
+  hud.textContent = `HP: ${health} | Score: ${score} | Targets: ${targets.filter(t => t.userData.hp > 0).length} | v6`;
+}
+
+// ── RESIZE ──
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ── GAME LOOP ──
+const clock = new THREE.Clock();
+let pickaxeSwing = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+
+  // Update camera first — movement uses camera direction
+  updateCamera();
+
+  // ── PLAYER MOVEMENT ──
+  if (mouse.locked) {
+    // Derive movement from camera's actual world direction — no sign ambiguity
+    const camDir = new THREE.Vector3();
+    camera.getWorldDirection(camDir);
+    const forward = new THREE.Vector3(camDir.x, 0, camDir.z).normalize();
+    const right = new THREE.Vector3();
+    right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+    const speed = WALK_SPEED * (keys.shift ? SPRINT_MULT : 1);
+
+    const moveDir = new THREE.Vector3();
+    if (keys.w) moveDir.add(forward);
+    if (keys.s) moveDir.sub(forward);
+    if (keys.d) moveDir.add(right);
+    if (keys.a) moveDir.sub(right);
+
+    if (moveDir.length() > 0) {
+      moveDir.normalize();
+      velocity.copy(moveDir.multiplyScalar(speed * dt));
+    } else {
+      velocity.set(0, 0, 0);
+    }
+
+    // Jump
+    if (keys.space && isGrounded) {
+      yVelocity = JUMP_VELOCITY;
+      isGrounded = false;
+    }
+
+    // Gravity
+    yVelocity += GRAVITY * dt;
+
+    // Apply movement
+    const newX = playerGroup.position.x + velocity.x;
+    const newZ = playerGroup.position.z + velocity.z;
+    let newY = playerGroup.position.y + yVelocity * dt;
+
+    if (newY <= GROUND_Y) {
+      newY = GROUND_Y;
+      yVelocity = 0;
+      isGrounded = true;
+    }
+
+    // Resolve horizontal (XZ) first at current Y — walls shouldn't block jumps
+    const hTest = new THREE.Vector3(newX, playerGroup.position.y, newZ);
+    const hCol = checkCollision(hTest);
+    if (hCol.collided) {
+      if (!checkCollision(new THREE.Vector3(newX, playerGroup.position.y, playerGroup.position.z)).collided) {
+        playerGroup.position.x = newX;
+      }
+      if (!checkCollision(new THREE.Vector3(playerGroup.position.x, playerGroup.position.y, newZ)).collided) {
+        playerGroup.position.z = newZ;
+      }
+    } else {
+      playerGroup.position.x = newX;
+      playerGroup.position.z = newZ;
+    }
+
+    // Then resolve vertical (Y) at the resolved XZ position
+    const vTest = new THREE.Vector3(playerGroup.position.x, newY, playerGroup.position.z);
+    if (!checkCollision(vTest).collided) {
+      playerGroup.position.y = newY;
+    } else {
+      yVelocity = 0;
+      if (newY <= GROUND_Y) isGrounded = true;
+    }
+
+    // Boundary clamp
+    playerGroup.position.x = Math.max(-58, Math.min(58, playerGroup.position.x));
+    playerGroup.position.z = Math.max(-58, Math.min(58, playerGroup.position.z));
+
+    // Rotate player to face the same direction the camera looks
+    if (forward.length() > 0.001) {
+      playerGroup.rotation.y = Math.atan2(forward.x, -forward.z);
+    }
+  }
+
+  // ── PICKAXE SWING ANIMATION ──
+  pickaxeSwing += dt * 8;
+  armGroup.rotation.z = -0.5 + Math.sin(pickaxeSwing) * 0.3;
+
+  // ── UPDATE BULLETS ──
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const bullet = bullets[i];
+    bullet.position.add(bullet.userData.velocity.clone().multiplyScalar(dt));
+    bullet.userData.life -= dt;
+
+    // Check hit targets
+    let hit = false;
+    for (const target of targets) {
+      if (target.userData.hp <= 0) continue;
+      const dist = bullet.position.distanceTo(target.position);
+      if (dist < 1.0) {
+        target.userData.hp--;
+        hit = true;
+        score += 10;
+        if (target.userData.hp <= 0) {
+          target.material.color.set('#333333');
+          target.material.emissive.set('#000000');
+          score += 50;
+        } else {
+          target.material.emissiveIntensity = 1.5;
+          setTimeout(() => { target.material.emissiveIntensity = 0.5; }, 100);
+        }
+        break;
+      }
+    }
+
+    // Check hit buildings (sparks)
+    for (const box of colliders) {
+      if (box.containsPoint(bullet.position)) {
+        hit = true;
+        break;
+      }
+    }
+
+    if (hit || bullet.userData.life <= 0 || bullet.position.y < -5) {
+      scene.remove(bullet);
+      bullets.splice(i, 1);
+    }
+  }
+
+  // ── RESPAWN TARGETS ──
+  if (targets.every(t => t.userData.hp <= 0)) {
+    targets.forEach(t => {
+      t.userData.hp = 3;
+      t.material.color.set('#ff4444');
+      t.material.emissive.set('#440000');
+      t.material.emissiveIntensity = 0.5;
+    });
+    score += 200;
+  }
+
+  // ── HUD ──
+  updateHUD();
+
+  // ── RENDER ──
+  renderer.render(scene, camera);
+}
+
+updateHUD();
+animate();
+
+console.log('💨 Fartnite ready!');
+</script>
+</body>
+</html>
